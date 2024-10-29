@@ -7,7 +7,7 @@ from Scripts.generate_data import create_encrypted_db_with_dummy_data
 
 def main():
     print("Creating the database and populating it with data...")
-    create_encrypted_db_with_dummy_data()  # Create the database and populate it with data
+    create_encrypted_db_with_dummy_data()  
 
     print("Initializing the environment...")
     env = DatabaseIndexEnv()  
