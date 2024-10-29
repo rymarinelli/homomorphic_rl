@@ -1,64 +1,102 @@
+from encryption import HE  
 import sqlite3
-import random
-from Scripts.ckks import HE  # Import HE from your ckks script
-from Scripts.encryption import encrypt_value  # Import your encrypt_value function
-from Scripts.homomorphic_sum import homomorphic_sum  # Import your homomorphic_sum function
+import logging
+import sys
+from pathlib import Path
 
-def create_encrypted_db_with_dummy_data(db_name='california_housing.db'):
-    """Creates an SQLite database with encrypted dummy data for testing purposes."""
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('generate_data.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def create_encrypted_db_with_dummy_data():
+    he_instance = HE()
+    current_dir = Path(__file__).parent
+    context_path = current_dir / "context.ckks"
+    public_key_path = current_dir / "public_key.pk"
+    secret_key_path = current_dir / "secret_key.sk"
+
+    he_instance.load_context(str(context_path))
+    he_instance.load_public_key(str(public_key_path))
+    he_instance.load_secret_key(str(secret_key_path))  # Ensure this file exists
+
     
-    # Drop the existing table if it exists and recreate with the correct schema
-    with sqlite3.connect(db_name) as conn:
-        cursor = conn.cursor()
+    db_path = 'california_housing.db'
+    try:
+        conn = sqlite3.connect(db_path)
+        logger.info(f"Connected to SQLite database '{db_path}'.")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to connect to the database: {e}")
+        sys.exit(1)
 
-        cursor.execute('DROP TABLE IF EXISTS housing_encrypted')
+    cursor = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS housing_encrypted (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+    
+    try:
+        cursor.execute("DROP TABLE IF EXISTS housing_encrypted;")
+        logger.info("Dropped existing 'housing_encrypted' table if it existed.")
+
+        cursor.execute("""
+            CREATE TABLE housing_encrypted (
                 MedInc_enc BLOB,
                 HouseAge_enc BLOB,
-                AveRooms_enc BLOB,
-                AveBedrms_enc BLOB,
                 Population_enc BLOB,
+                AveRooms_enc BLOB,
                 AveOccup_enc BLOB,
-                Latitude_enc BLOB,
                 Longitude_enc BLOB,
-                MedHouseVal_enc BLOB
-            )
-        ''')
+                Latitude_enc BLOB,
+                MedHouseVal_enc BLOB,
+                AveBedrms_enc BLOB
+            );
+        """)
+        logger.info("'housing_encrypted' table created successfully.")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to create 'housing_encrypted' table: {e}")
+        sys.exit(1)
 
-        # Register the custom SQL function
-        conn.create_function("homomorphic_sum", -1, homomorphic_sum)
-
-        conn.commit()
-        print("Table recreated with all necessary columns and functions registered.")
-
-    # Insert dummy data with encryption for all columns
-    data = [
-        (
-            encrypt_value(random.uniform(1.0, 10.0)),   # MedInc_enc
-            encrypt_value(random.uniform(1.0, 100.0)),  # HouseAge_enc
-            encrypt_value(random.uniform(1.0, 10.0)),   # AveRooms_enc
-            encrypt_value(random.uniform(1.0, 5.0)),    # AveBedrms_enc
-            encrypt_value(random.uniform(100.0, 2000.0)), # Population_enc
-            encrypt_value(random.uniform(1.0, 10.0)),   # AveOccup_enc
-            encrypt_value(random.uniform(32.0, 42.0)),  # Latitude_enc
-            encrypt_value(random.uniform(-124.0, -114.0)), # Longitude_enc
-            encrypt_value(random.uniform(100000.0, 500000.0)) # MedHouseVal_enc
-        )
-        for _ in range(10)
+    # Sample data to insert
+    sample_data = [
+        (8.3252, 41, 880, 6.9841, 1.0238, -122.23, 37.88, 452600, 2.555),
+        (8.3014, 21, 1262, 6.2381, 0.9719, -122.22, 37.86, 358500, 2.109),
+        
     ]
 
-    with sqlite3.connect(db_name) as conn:
-        cursor = conn.cursor()
-        cursor.executemany('''
-            INSERT INTO housing_encrypted (
-                MedInc_enc, HouseAge_enc, AveRooms_enc, AveBedrms_enc, Population_enc,
-                AveOccup_enc, Latitude_enc, Longitude_enc, MedHouseVal_enc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', data)
+    
+    for idx, row in enumerate(sample_data, start=1):
+        encrypted_row = []
+        for value in row:
+            encrypted_bytes = he_instance.encrypt_value(value)
+            encrypted_row.append(encrypted_bytes)
+        try:
+            cursor.execute("""
+                INSERT INTO housing_encrypted (
+                    MedInc_enc,
+                    HouseAge_enc,
+                    Population_enc,
+                    AveRooms_enc,
+                    AveOccup_enc,
+                    Longitude_enc,
+                    Latitude_enc,
+                    MedHouseVal_enc,
+                    AveBedrms_enc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """, encrypted_row)
+            logger.info(f"Inserted encrypted row {idx} into 'housing_encrypted' table.")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to insert encrypted row {idx}: {e}")
+            continue
 
-        conn.commit()
-        print("Data inserted into the newly created table.")
+    conn.commit()
+    logger.info("All sample data encrypted and inserted successfully.")
+    conn.close()
+    logger.info(f"Database connection to '{db_path}' closed.")
+
+if __name__ == "__main__":
+    create_encrypted_db_with_dummy_data()
 
