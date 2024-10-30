@@ -2,67 +2,92 @@ import sqlite3
 import pytest
 import numpy as np
 from Pyfhel import Pyfhel, PyCtxt
+import os
+from pathlib import Path
 
-# Define the aggregate class
-class HomomorphicSumAggregate:
-    def __init__(self):
-        self.he = Pyfhel()
-        self.he.load_context("context.ckks")
-        self.he.load_public_key("public_key.pk")
-        self.total_ctxt = None
-
-    def step(self, value):
-        if value is None:
-            return
-        if self.total_ctxt is None:
-            self.total_ctxt = PyCtxt(pyfhel=self.he, bytestring=value)
-        else:
-            ctxt = PyCtxt(pyfhel=self.he, bytestring=value)
-            self.total_ctxt += ctxt  # Homomorphic addition
-
-    def finalize(self):
-        if self.total_ctxt is None:
-            return None
-        return self.total_ctxt.to_bytes()
-
-def homomorphic_sum(*values):
-    if not values:
+def homomorphic_sum_py(he: Pyfhel, *ciphertexts: bytes) -> bytes:
+    """
+    Sums multiple encrypted ciphertexts using Pyfhel and returns the aggregated ciphertext.
+    
+    Parameters:
+        he (Pyfhel): An initialized Pyfhel object with loaded context and keys.
+        *ciphertexts (bytes): Variable number of ciphertexts in bytes format.
+    
+    Returns:
+        bytes: The aggregated ciphertext as bytes.
+    """
+    if not ciphertexts:
         return None
 
-    he = Pyfhel()
-    he.load_context("context.ckks")
-    he.load_public_key("public_key.pk")
+    # Initialize the total ciphertext with the first ciphertext
+    total_ctxt = PyCtxt(pyfhel=he, bytestring=ciphertexts[0])
 
-    # Initialize total_ctxt with the first ciphertext
-    first_value = values[0].tobytes() if isinstance(values[0], memoryview) else values[0]
-    total_ctxt = PyCtxt(pyfhel=he, bytestring=first_value)
-
-    # Sum the remaining ciphertexts
-    for value in values[1:]:
-        value_bytes = value.tobytes() if isinstance(value, memoryview) else value
-        ctxt = PyCtxt(pyfhel=he, bytestring=value_bytes)
+    # Add the remaining ciphertexts
+    for ct in ciphertexts[1:]:
+        ctxt = PyCtxt(pyfhel=he, bytestring=ct)
         total_ctxt += ctxt  # Homomorphic addition
 
     return total_ctxt.to_bytes()
 
+class HomomorphicSumAggregate:
+    def __init__(self):
+        self.he = Pyfhel()
+        current_dir = Path(__file__).parent
+        context_path = current_dir / "context.ckks"
+        public_key_path = current_dir / "public_key.pk"
+        
+        # Load context and public key
+        if not context_path.exists():
+            raise FileNotFoundError(f"Context file not found at {context_path}")
+        if not public_key_path.exists():
+            raise FileNotFoundError(f"Public key file not found at {public_key_path}")
+        
+        self.he.load_context(str(context_path))
+        self.he.load_public_key(str(public_key_path))
+        self.total_ctxt = None
+        print("HomomorphicSumAggregate initialized with context and public key.")
+
+    def step(self, value):
+        if value is None:
+            print("HomomorphicSumAggregate: Received None value.")
+            return
+        if self.total_ctxt is None:
+            self.total_ctxt = PyCtxt(pyfhel=self.he, bytestring=value)
+            print("HomomorphicSumAggregate: Initialized total_ctxt with first ciphertext.")
+        else:
+            ctxt = PyCtxt(pyfhel=self.he, bytestring=value)
+            self.total_ctxt += ctxt
+            print("HomomorphicSumAggregate: Added ciphertext to total_ctxt.")
+
+    def finalize(self):
+        if self.total_ctxt is None:
+            print("HomomorphicSumAggregate: No ciphertexts were aggregated.")
+            return None
+        print("HomomorphicSumAggregate: Finalizing aggregated ciphertext.")
+        return self.total_ctxt.to_bytes()
+
+# Pyfhel fixture
 @pytest.fixture(scope='module')
 def he():
     he_instance = Pyfhel()
     qi_sizes = [60, 30, 30, 30, 30, 30, 60]
     he_instance.contextGen(scheme='CKKS', n=2**14, scale=2**30, qi_sizes=qi_sizes)
     he_instance.keyGen()
-    # Correct method names with underscores
+    # Save context and keys in the current directory
     he_instance.save_context("context.ckks")
     he_instance.save_public_key("public_key.pk")
     he_instance.save_secret_key("secret_key.sk")
+    print("Pyfhel instance initialized and context/keys saved.")
     return he_instance
 
+# Setup database fixture
 @pytest.fixture(scope='module')
 def setup_database(he):
     conn = sqlite3.connect(':memory:')
 
     # Register homomorphic_sum as an aggregate function
     conn.create_aggregate("homomorphic_sum", 1, HomomorphicSumAggregate)
+    print("homomorphic_sum aggregate function registered in SQLite.")
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -74,6 +99,7 @@ def setup_database(he):
             MedInc REAL
         )
     ''')
+    print("Table housing_encrypted created.")
 
     SCALE = 2 ** 30  # Ensure this matches the scale in contextGen
 
@@ -109,15 +135,16 @@ def setup_database(he):
     conn.commit()
     yield conn
     conn.close()
+    print("In-memory SQLite database closed.")
 
 def test_homomorphic_sum(setup_database, he):
     conn = setup_database
     cursor = conn.cursor()
 
     try:
-        # Step 1: Verify individual ciphertexts
         cursor.execute('SELECT MedInc_enc, MedInc FROM housing_encrypted')
         rows = cursor.fetchall()
+        print("\nVerifying individual ciphertexts:")
         for row in rows:
             enc, plain = row
             ctxt = PyCtxt(pyfhel=he, bytestring=enc)
@@ -126,7 +153,6 @@ def test_homomorphic_sum(setup_database, he):
             print(f"Decrypted MedInc_enc: {decrypted_val} (expected: {plain})")
             np.testing.assert_almost_equal(decrypted_val, plain, decimal=1)
 
-        # Step 2: Perform homomorphic sum
         cursor.execute('SELECT homomorphic_sum(MedInc_enc) FROM housing_encrypted')
         result = cursor.fetchone()[0]
 
@@ -136,7 +162,7 @@ def test_homomorphic_sum(setup_database, he):
         # Decrypt the aggregated sum
         ctxt_result = PyCtxt(pyfhel=he, bytestring=result)
         decrypted_ptxt = he.decryptFrac(ctxt_result)
-        decrypted_sum = decrypted_ptxt[0]  # Access the first element
+        decrypted_sum = decrypted_ptxt[0]  
 
         expected_sum = 6.0
 
@@ -146,7 +172,7 @@ def test_homomorphic_sum(setup_database, he):
         # Validate that the decrypted result matches the expected sum
         np.testing.assert_almost_equal(decrypted_sum, expected_sum, decimal=1)
 
-        # Optional: Compare with SQLite's SUM
+        
         cursor.execute('SELECT SUM(MedInc) FROM housing_encrypted')
         sqlite_sum = cursor.fetchone()[0]
         print(f"SQLite SUM result: {sqlite_sum}")
