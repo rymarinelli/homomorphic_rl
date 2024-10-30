@@ -10,6 +10,7 @@ This project implements a reinforcement learning (RL) environment using Gymnasiu
 - **Dynamic Index Management**: Optimize query performance by adding and dropping indexes based on RL actions.
 
 ## Getting Started
+To run train the agent, one needs to run ```Script/generate_keys.py```
 
 ### Prerequisites
 - Python 3.10 or higher
